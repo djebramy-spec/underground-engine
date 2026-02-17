@@ -1,0 +1,9 @@
+{
+      "name": "underground-engine",
+        "version": "1.0.0",
+          "main": "index.js",
+            "dependencies": {
+                "node-telegram-bot-api": "^0.61.0",
+                    "fs-extra": "^11.1.1"
+                      }
+                      }
