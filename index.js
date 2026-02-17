@@ -1,181 +1,170 @@
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs-extra');
+const ytdl = require('ytdl-core');
+const ytSearch = require('yt-search');
 
-// Load token from Render
 const token = process.env.TOKEN;
+const storageChannel = process.env.STORAGE_CHANNEL;
+
 const bot = new TelegramBot(token, { polling: true });
 
-// Database
+// ---------- Database ----------
 let db = { users: {} };
+function saveDB() { fs.writeJsonSync("database.json", db); }
+function loadDB() { if (fs.existsSync("database.json")) db = fs.readJsonSync("database.json"); }
+function getUser(id) { 
+  if (!db.users[id]) db.users[id] = { songs: [], favorites: [], playlists: {}, history: [], playCount: {} };
+    return db.users[id]; 
+    }
+    loadDB();
 
-function saveDB() {
-  fs.writeJsonSync("database.json", db);
-  }
+    // ---------- Inline Keyboards ----------
+    function mainMenuKeyboard() {
+      return {
+          reply_markup: {
+                inline_keyboard: [
+                        [{ text: "📚 Library", callback_data: "menu:library" }],
+                                [{ text: "⭐ Favorites", callback_data: "menu:favorites" }],
+                                        [{ text: "📂 Playlists", callback_data: "menu:playlists" }],
+                                                [{ text: "⏱ Recent", callback_data: "menu:recent" }],
+                                                        [{ text: "📊 Top Played", callback_data: "menu:top" }]
+                                                              ]
+                                                                  }
+                                                                    };
+                                                                    }
 
-  function loadDB() {
-    if (fs.existsSync("database.json")) {
-        db = fs.readJsonSync("database.json");
-          }
-          }
+                                                                    function createSongKeyboard(index) {
+                                                                      return {
+                                                                          reply_markup: {
+                                                                                inline_keyboard: [
+                                                                                        [{ text: "🎵 Play", callback_data: `play:${index}` }],
+                                                                                                [{ text: "⭐ Favorite", callback_data: `fav:${index}` }]
+                                                                                                      ]
+                                                                                                          }
+                                                                                                            };
+                                                                                                            }
 
-          loadDB();
+                                                                                                            // ---------- Commands ----------
+                                                                                                            bot.setMyCommands([
+                                                                                                              { command: "start", description: "Open the main menu" },
+                                                                                                                { command: "yt", description: "Search and download a song from YouTube" }
+                                                                                                                ]);
 
-          // Helper functions
-          function getUser(id) {
-            if (!db.users[id]) {
-                db.users[id] = { songs: [], playlists: {}, favorites: [], history: [], playCount: {} };
-                  }
-                    return db.users[id];
-                    }
+                                                                                                                bot.onText(/\/start/, msg => {
+                                                                                                                  bot.sendMessage(msg.chat.id, "Welcome to Underground Music Bot! Use the menu below:", mainMenuKeyboard());
+                                                                                                                  });
 
-                    function addSong(user, audio) {
-                      user.songs.push({
-                          fileId: audio.file_id,
-                              title: audio.title || "Unknown",
-                                  artist: audio.artist || "Unknown",
-                                      album: audio.album || "Unknown",
-                                          duration: audio.duration
-                                            });
-                                              saveDB();
-                                              }
+                                                                                                                  // ---------- Upload to Storage Channel ----------
+                                                                                                                  async function uploadToStorageChannel(audio, title="Unknown", artist="Unknown") {
+                                                                                                                    const sent = await bot.sendAudio(storageChannel, audio, { caption: `${title} - ${artist}` });
+                                                                                                                      return sent.audio.file_id;
+                                                                                                                      }
 
-                                              // Inline keyboard helper
-                                              function createSongKeyboard(songIndex) {
-                                                return {
-                                                    reply_markup: {
-                                                          inline_keyboard: [
-                                                                  [{ text: "🎵 Play", callback_data: `play:${songIndex}` }],
-                                                                          [{ text: "⭐ Favorite", callback_data: `fav:${songIndex}` }]
-                                                                                ]
-                                                                                    }
-                                                                                      };
-                                                                                      }
+                                                                                                                      // ---------- Handle User Audio Upload ----------
+                                                                                                                      bot.on("message", async msg => {
+                                                                                                                        if (!msg.audio) return;
 
-                                                                                      // Handle uploaded audio
-                                                                                      bot.on("message", (msg) => {
-                                                                                        const userId = msg.from.id;
-                                                                                          const user = getUser(userId);
+                                                                                                                          const user = getUser(msg.from.id);
+                                                                                                                            const audio = msg.audio;
 
-                                                                                            if (msg.audio) {
-                                                                                                addSong(user, msg.audio);
-                                                                                                    bot.sendMessage(msg.chat.id, `Indexed: ${msg.audio.title || "Unknown"}`);
-                                                                                                      }
-                                                                                                      });
+                                                                                                                              // Upload to storage channel and get file_id
+                                                                                                                                const fileId = await uploadToStorageChannel(audio.file_id, audio.title, audio.artist);
 
-                                                                                                      // Commands
-                                                                                                      bot.onText(/\/library/, (msg) => {
-                                                                                                        const user = getUser(msg.from.id);
-                                                                                                          if (user.songs.length === 0) return bot.sendMessage(msg.chat.id, "Library empty.");
-                                                                                                            
-                                                                                                              let text = user.songs.map((s, i) => `${i+1}. ${s.title} - ${s.artist}`).join("\n");
-                                                                                                                bot.sendMessage(msg.chat.id, text);
-                                                                                                                });
+                                                                                                                                  // Add to user library
+                                                                                                                                    user.songs.push({
+                                                                                                                                        fileId,
+                                                                                                                                            title: audio.title || "Unknown",
+                                                                                                                                                artist: audio.artist || "Unknown",
+                                                                                                                                                    duration: audio.duration
+                                                                                                                                                      });
 
-                                                                                                                bot.onText(/\/random/, (msg) => {
-                                                                                                                  const user = getUser(msg.from.id);
-                                                                                                                    if (user.songs.length === 0) return bot.sendMessage(msg.chat.id, "Library empty.");
-                                                                                                                      
-                                                                                                                        let idx = Math.floor(Math.random() * user.songs.length);
-                                                                                                                          let song = user.songs[idx];
+                                                                                                                                                        saveDB();
+                                                                                                                                                          bot.sendMessage(msg.chat.id, `Indexed and stored: ${audio.title || "Unknown"}`);
+                                                                                                                                                          });
 
-                                                                                                                            user.history.push(song);
-                                                                                                                              user.playCount[song.title] = (user.playCount[song.title] || 0) + 1;
-                                                                                                                                saveDB();
+                                                                                                                                                          // ---------- YouTube Search Command ----------
+                                                                                                                                                          bot.onText(/\/yt (.+)/, async (msg, match) => {
+                                                                                                                                                            const chatId = msg.chat.id;
+                                                                                                                                                              const user = getUser(msg.from.id);
+                                                                                                                                                                const query = match[1] + " official audio"; // bias toward music
 
-                                                                                                                                  bot.sendAudio(msg.chat.id, song.fileId, {}, createSongKeyboard(idx));
-                                                                                                                                  });
+                                                                                                                                                                  const results = await ytSearch(query);
+                                                                                                                                                                    if (!results.videos.length) return bot.sendMessage(chatId, "No results found.");
+                                                                                                                                                                      const top = results.videos.slice(0, 5);
 
-                                                                                                                                  // Playlist commands
-                                                                                                                                  bot.onText(/\/createplaylist (.+)/, (msg, match) => {
-                                                                                                                                    const user = getUser(msg.from.id);
-                                                                                                                                      const name = match[1].trim();
-                                                                                                                                        if (!name) return bot.sendMessage(msg.chat.id, "Playlist name required.");
+                                                                                                                                                                        const keyboard = top.map(video => [{ text: `${video.title} (${video.timestamp})`, callback_data: `yt:${video.url}` }]);
+                                                                                                                                                                          bot.sendMessage(chatId, "Select a song to download:", { reply_markup: { inline_keyboard: keyboard } });
+                                                                                                                                                                          });
 
-                                                                                                                                          if (user.playlists[name]) return bot.sendMessage(msg.chat.id, "Playlist exists.");
-                                                                                                                                            user.playlists[name] = [];
-                                                                                                                                              saveDB();
-                                                                                                                                                bot.sendMessage(msg.chat.id, `Playlist "${name}" created.`);
-                                                                                                                                                });
+                                                                                                                                                                          // ---------- Handle Inline Buttons ----------
+                                                                                                                                                                          bot.on("callback_query", async query => {
+                                                                                                                                                                            const chatId = query.message.chat.id;
+                                                                                                                                                                              const user = getUser(query.from.id);
+                                                                                                                                                                                const [action, arg] = query.data.split(":");
 
-                                                                                                                                                bot.onText(/\/addtoplaylist (\S+) (\d+)/, (msg, match) => {
-                                                                                                                                                  const user = getUser(msg.from.id);
-                                                                                                                                                    const name = match[1];
-                                                                                                                                                      const songIndex = parseInt(match[2]) - 1;
+                                                                                                                                                                                  if (action === "play") {
+                                                                                                                                                                                      const index = parseInt(arg);
+                                                                                                                                                                                          const song = user.songs[index];
+                                                                                                                                                                                              bot.sendAudio(chatId, song.fileId, {}, createSongKeyboard(index));
+                                                                                                                                                                                                }
 
-                                                                                                                                                        if (!user.playlists[name]) return bot.sendMessage(msg.chat.id, "Playlist not found.");
-                                                                                                                                                          if (!user.songs[songIndex]) return bot.sendMessage(msg.chat.id, "Song not found.");
+                                                                                                                                                                                                  if (action === "fav") {
+                                                                                                                                                                                                      const index = parseInt(arg);
+                                                                                                                                                                                                          const song = user.songs[index];
+                                                                                                                                                                                                              if (!user.favorites.includes(song.fileId)) user.favorites.push(song.fileId);
+                                                                                                                                                                                                                  saveDB();
+                                                                                                                                                                                                                      bot.sendMessage(chatId, `Added to favorites: ${song.title}`);
+                                                                                                                                                                                                                        }
 
-                                                                                                                                                            user.playlists[name].push(user.songs[songIndex]);
-                                                                                                                                                              saveDB();
-                                                                                                                                                                bot.sendMessage(msg.chat.id, `Added "${user.songs[songIndex].title}" to "${name}".`);
-                                                                                                                                                                });
+                                                                                                                                                                                                                          if (action === "yt") {
+                                                                                                                                                                                                                              const url = arg;
+                                                                                                                                                                                                                                  bot.sendMessage(chatId, "Downloading and storing in your private channel...");
 
-                                                                                                                                                                bot.onText(/\/playlist (\S+)/, (msg, match) => {
-                                                                                                                                                                  const user = getUser(msg.from.id);
-                                                                                                                                                                    const name = match[1];
+                                                                                                                                                                                                                                      const stream = ytdl(url, { filter: "audioonly" });
+                                                                                                                                                                                                                                          const chunks = [];
+                                                                                                                                                                                                                                              stream.on("data", chunk => chunks.push(chunk));
+                                                                                                                                                                                                                                                  stream.on("end", async () => {
+                                                                                                                                                                                                                                                        const buffer = Buffer.concat(chunks);
 
-                                                                                                                                                                      if (!user.playlists[name]) return bot.sendMessage(msg.chat.id, "Playlist not found.");
-                                                                                                                                                                        if (user.playlists[name].length === 0) return bot.sendMessage(msg.chat.id, "Playlist empty.");
+                                                                                                                                                                                                                                                              // Upload to storage channel
+                                                                                                                                                                                                                                                                    const sent = await bot.sendAudio(storageChannel, buffer, { caption: "Downloaded from YouTube" });
+                                                                                                                                                                                                                                                                          const fileId = sent.audio.file_id;
 
-                                                                                                                                                                          let text = user.playlists[name].map((s, i) => `${i+1}. ${s.title} - ${s.artist}`).join("\n");
-                                                                                                                                                                            bot.sendMessage(msg.chat.id, text);
-                                                                                                                                                                            });
+                                                                                                                                                                                                                                                                                // Add to user library
+                                                                                                                                                                                                                                                                                      const info = await ytdl.getInfo(url);
+                                                                                                                                                                                                                                                                                            user.songs.push({
+                                                                                                                                                                                                                                                                                                    fileId,
+                                                                                                                                                                                                                                                                                                            title: info.videoDetails.title,
+                                                                                                                                                                                                                                                                                                                    artist: info.videoDetails.author.name,
+                                                                                                                                                                                                                                                                                                                            duration: parseInt(info.videoDetails.lengthSeconds)
+                                                                                                                                                                                                                                                                                                                                  });
+                                                                                                                                                                                                                                                                                                                                        saveDB();
 
-                                                                                                                                                                            // Favorites
-                                                                                                                                                                            bot.onText(/\/favorites/, (msg) => {
-                                                                                                                                                                              const user = getUser(msg.from.id);
-                                                                                                                                                                                if (user.favorites.length === 0) return bot.sendMessage(msg.chat.id, "No favorites yet.");
-                                                                                                                                                                                  
-                                                                                                                                                                                    let text = user.favorites.map((s, i) => `${i+1}. ${s.title} - ${s.artist}`).join("\n");
-                                                                                                                                                                                      bot.sendMessage(msg.chat.id, text);
-                                                                                                                                                                                      });
+                                                                                                                                                                                                                                                                                                                                              // Send to user
+                                                                                                                                                                                                                                                                                                                                                    bot.sendAudio(chatId, fileId, {}, createSongKeyboard(user.songs.length - 1));
+                                                                                                                                                                                                                                                                                                                                                          bot.sendMessage(chatId, `Downloaded and added: ${info.videoDetails.title}`);
+                                                                                                                                                                                                                                                                                                                                                              });
+                                                                                                                                                                                                                                                                                                                                                                }
 
-                                                                                                                                                                                      // Callback queries (inline buttons)
-                                                                                                                                                                                      bot.on("callback_query", (query) => {
-                                                                                                                                                                                        const user = getUser(query.from.id);
-                                                                                                                                                                                          const [action, idx] = query.data.split(":");
-                                                                                                                                                                                            const song = user.songs[parseInt(idx)];
+                                                                                                                                                                                                                                                                                                                                                                  bot.answerCallbackQuery(query.id);
+                                                                                                                                                                                                                                                                                                                                                                  });
 
-                                                                                                                                                                                              if (action === "play") {
-                                                                                                                                                                                                  user.history.push(song);
-                                                                                                                                                                                                      user.playCount[song.title] = (user.playCount[song.title] || 0) + 1;
-                                                                                                                                                                                                          saveDB();
-                                                                                                                                                                                                              bot.sendAudio(query.message.chat.id, song.fileId);
-                                                                                                                                                                                                                }
+                                                                                                                                                                                                                                                                                                                                                                  // ---------- Main Menu Navigation (Library / Favorites / etc.) ----------
+                                                                                                                                                                                                                                                                                                                                                                  bot.on("callback_query", async query => {
+                                                                                                                                                                                                                                                                                                                                                                    const chatId = query.message.chat.id;
+                                                                                                                                                                                                                                                                                                                                                                      const user = getUser(query.from.id);
 
-                                                                                                                                                                                                                  if (action === "fav") {
-                                                                                                                                                                                                                      if (!user.favorites.find(s => s.fileId === song.fileId)) {
-                                                                                                                                                                                                                            user.favorites.push(song);
-                                                                                                                                                                                                                                  saveDB();
-                                                                                                                                                                                                                                        bot.answerCallbackQuery(query.id, { text: "Added to favorites ⭐" });
-                                                                                                                                                                                                                                            } else {
-                                                                                                                                                                                                                                                  bot.answerCallbackQuery(query.id, { text: "Already in favorites" });
-                                                                                                                                                                                                                                                      }
-                                                                                                                                                                                                                                                        }
-                                                                                                                                                                                                                                                        });
+                                                                                                                                                                                                                                                                                                                                                                        if (query.data === "menu:library") {
+                                                                                                                                                                                                                                                                                                                                                                            if (!user.songs.length) return bot.sendMessage(chatId, "Your library is empty!");
+                                                                                                                                                                                                                                                                                                                                                                                user.songs.forEach((song, index) => {
+                                                                                                                                                                                                                                                                                                                                                                                      bot.sendMessage(chatId, `${song.title} - ${song.artist}`, createSongKeyboard(index));
+                                                                                                                                                                                                                                                                                                                                                                                          });
+                                                                                                                                                                                                                                                                                                                                                                                            }
 
-                                                                                                                                                                                                                                                        // Stats
-                                                                                                                                                                                                                                                        bot.onText(/\/top/, (msg) => {
-                                                                                                                                                                                                                                                          const user = getUser(msg.from.id);
-                                                                                                                                                                                                                                                            let sorted = Object.entries(user.playCount)
-                                                                                                                                                                                                                                                                .sort((a,b) => b[1]-a[1])
-                                                                                                                                                                                                                                                                    .slice(0, 10);
+                                                                                                                                                                                                                                                                                                                                                                                              if (query.data === "menu:favorites") {
+                                                                                                                                                                                                                                                                                                                                                                                                  if (!user.favorites.length) return bot.sendMessage(chatId, "No favorites yet!");
+                                                                                                                                                                                                                                                                                                                                                                                                      user.favorites.forEach(fileId => bot.sendAudio(chatId, fileId));
+                                                                                                                                                                                                                                                                                                                                                                                                        }
 
-                                                                                                                                                                                                                                                                      if (sorted.length === 0) return bot.sendMessage(msg.chat.id, "No stats yet.");
-                                                                                                                                                                                                                                                                        let text = sorted.map(([title,count]) => `${title}: ${count} plays`).join("\n");
-                                                                                                                                                                                                                                                                          bot.sendMessage(msg.chat.id, text);
-                                                                                                                                                                                                                                                                          });
-
-                                                                                                                                                                                                                                                                          bot.onText(/\/recent/, (msg) => {
-                                                                                                                                                                                                                                                                            const user = getUser(msg.from.id);
-                                                                                                                                                                                                                                                                              if (user.history.length === 0) return bot.sendMessage(msg.chat.id, "No recently played songs.");
-
-                                                                                                                                                                                                                                                                                let recent = user.history.slice(-10).reverse();
-                                                                                                                                                                                                                                                                                  let text = recent.map(s => `${s.title} - ${s.artist}`).join("\n");
-                                                                                                                                                                                                                                                                                    bot.sendMessage(msg.chat.id, text);
-                                                                                                                                                                                                                                                                                    });
-
-                                                                                                                                                                                                                                                                                    // Keep Render happy
-                                                                                                                                                                                                                                                                                    require("http")
-                                                                                                                                                                                                                                                                                      .createServer((req, res) => res.end("Bot running"))
-                                                                                                                                                                                                                                                                                        .listen(process.env.PORT || 3000);
+                                                                                                                                                                                                                                                                                                                                                                                                          // Add similar menus for playlists, recent, top
+                                                                                                                                                                                                                                                                                                                                                                                                          });
